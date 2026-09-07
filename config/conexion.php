@@ -3,6 +3,7 @@ namespace Config;
 
 class Conexion {
     // Propiedades privadas para la seguridad de las credenciales
+    //Recordar hacer la conexion mediante la API de la GAAA
     private string $usuario = 'jean'; 
     private string $clave = 'Jp121312'; 
     private string $string_conexion = '//localhost:1521/FREEPDB1'; 
