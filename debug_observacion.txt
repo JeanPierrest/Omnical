@@ -1,0 +1,2 @@
+2026-08-31 10:36:19 - Fallo al crear segmento de observación.
+2026-08-31 10:42:02 - Fallo al crear segmento de observación.
