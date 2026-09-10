@@ -239,7 +239,12 @@ class RequerimientoController {
             }
         }
 
-        $this->modelo->resolverTicket($idTicket, $estadoFinal, $idInconsistencia, $observaciones, $nombresArchivosCierre);
+       $this->modelo->resolverTicket($idTicket, $estadoFinal, $idInconsistencia, $observaciones, $nombresArchivosCierre);
+
+        // Si el caso quedó en estado final, enviamos respaldo por correo (best-effort, no bloquea el flujo)
+        if (in_array($estadoFinal, ['RESUELTO', 'INCONSISTENTE'])) {
+            $this->enviarRespaldoCorreoHistorico($idTicket);
+        }
 
         header("Location: index.php?accion=mis_casos");
         exit;
@@ -573,9 +578,13 @@ public function mostrarValidacionesPendientes() {
 public function aprobarValidacion() {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $idSolicitud = (int)$_POST['id_solicitud'];
-        $ok = $this->modelo->aprobarValidacion($idSolicitud);
+        $resultado = $this->modelo->aprobarValidacion($idSolicitud);
 
-        if ($ok) {
+        if ($resultado && $resultado['exito']) {
+            // Si el caso quedó en estado final, enviamos respaldo por correo
+            if (in_array($resultado['estado_final'], ['RESUELTO', 'INCONSISTENTE'])) {
+                $this->enviarRespaldoCorreoHistorico($resultado['id_requerimiento']);
+            }
             header("Location: index.php?accion=validaciones_pendientes&exito=aprobado");
         } else {
             header("Location: index.php?accion=validaciones_pendientes&error=fallo_aprobar");
@@ -833,5 +842,66 @@ public function marcarNotificacionesLeidasAjax() {
     exit;
 }
 
+private function enviarRespaldoCorreoHistorico($idRequerimiento) {
+    require_once __DIR__ . '/../libs/PHPMailer/PHPMailer.php';
+    require_once __DIR__ . '/../libs/PHPMailer/SMTP.php';
+    require_once __DIR__ . '/../libs/PHPMailer/Exception.php';
+
+    $ticket = $this->modelo->obtenerTicketPorId($idRequerimiento);
+    if (!$ticket) return false;
+
+    $codigoTicket = $ticket['CODIGO_TICKET'];
+    $carpetaHistorico = __DIR__ . '/../public/historico/' . $codigoTicket . '/';
+
+    if (!is_dir($carpetaHistorico)) return false;
+
+    $archivos = glob($carpetaHistorico . '*');
+    if (empty($archivos)) return true;
+
+    $mail = new \PHPMailer\PHPMailer\PHPMailer(true);
+
+    try {
+        $mail->isSMTP();
+        $mail->Host       = 'smtp.gmail.com';
+        $mail->SMTPAuth   = true;
+        $mail->Username   = 'jpscscorreo@gmail.com';
+        $mail->Password   = 'lxqxinljowamkktv';
+        $mail->SMTPSecure = \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port       = 587;
+        $mail->CharSet    = 'UTF-8';
+        $mail->Timeout    = 15; // Máximo 15 segundos de espera, no 120
+        $mail->SMTPKeepAlive = false;
+
+        $mail->setFrom('jpscscorreo@gmail.com', 'Sistema Omnicanal - Respaldo');
+        $mail->addAddress('jpscscorreo312@gmail.com');
+
+        $descripcionCaso = $ticket['DESCRIPCION_REQUERIMIENTO'] ?? '-';
+        if (is_object($descripcionCaso)) $descripcionCaso = $descripcionCaso->load();
+
+        $documentoAsegurado = trim(($ticket['TIPO_DOCUMENTO'] ?? '') . ' ' . ($ticket['NUMERO_DOCUMENTO'] ?? ''));
+        if (empty($documentoAsegurado)) $documentoAsegurado = '-';
+
+        $mail->Subject = 'Respaldo de archivos - Caso ' . $codigoTicket;
+        $mail->Body    = "Se adjuntan los archivos del caso $codigoTicket, migrado al histórico el " . date('d/m/Y H:i') . ".\n\n"
+                        . "Dependencia: " . ($ticket['DEPENDENCIA'] ?? '-') . "\n"
+                        . "Solicitante: " . ($ticket['NOMBRE_SOLICITANTE'] ?? '-') . "\n"
+                        . "Documento del Asegurado: " . $documentoAsegurado . "\n"
+                        . "Estado: " . ($ticket['ESTADO_ACTUAL'] ?? '-') . "\n\n"
+                        . "Descripción del Requerimiento:\n" . $descripcionCaso;
+
+        foreach ($archivos as $rutaArchivo) {
+            if (is_file($rutaArchivo)) {
+                $mail->addAttachment($rutaArchivo);
+            }
+        }
+
+        $mail->send();
+        return true;
+
+    } catch (\Exception $e) {
+        error_log("Fallo al enviar respaldo por correo del caso $codigoTicket: " . $mail->ErrorInfo);
+        return false;
+    }
+}
 }
 ?>
