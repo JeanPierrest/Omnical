@@ -1,0 +1,1 @@
+2026-09-09 08:49:50 - Caso 260900007 - SMTP Error: Could not authenticate. - SMTP Error: Could not authenticate.

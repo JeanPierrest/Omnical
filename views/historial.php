@@ -231,6 +231,7 @@
                             <input type="hidden" class="d-modificacion" value="<?= htmlspecialchars($t['FECHA_MODIFICACION'] ?? '') ?>">
                             <input type="hidden" class="d-codigo" value="<?= htmlspecialchars($t['CODIGO_TICKET'] ?? '') ?>">
                             <input type="hidden" class="d-archivos" value="<?= htmlspecialchars($t['ARCHIVO_EVIDENCIA'] ?? '') ?>">
+                            <input type="hidden" class="d-migrado" value="<?= (int)($t['ARCHIVO_MIGRADO'] ?? 0) ?>">
                         </td>
                         
                         <td><?= htmlspecialchars($t['NOMBRE_SOLICITANTE'] ?? '') ?></td>
@@ -363,7 +364,7 @@
 </div>
 
 <script>
-    function abrirModalDetalles(elementoEnlace) {
+        function abrirModalDetalles(elementoEnlace) {
         const td = elementoEnlace.parentElement;
         
         const codigo = elementoEnlace.innerText.trim();
@@ -378,6 +379,7 @@
         const modificacion = td.querySelector('.d-modificacion').value;
         const codigoTicket = td.querySelector('.d-codigo').value;
         const archivos = td.querySelector('.d-archivos').value;
+        const archivoMigrado = td.querySelector('.d-migrado').value === '1';
 
         document.getElementById('m-titulo').innerText = "Expediente: " + codigo;
         document.getElementById('m-solicitante').innerText = solicitante;
@@ -413,7 +415,6 @@
             'EXT_': { id: 'm-grupo-externo',     archivos: [] } // cubre EXT_ y EXT_RET_
         };
 
-        // Ocultamos todos los grupos y limpiamos antes de repoblar
         Object.values(grupos).forEach(g => {
             const cont = document.getElementById(g.id);
             cont.style.display = 'none';
@@ -424,12 +425,15 @@
         if (archivos && archivos.trim() !== '' && codigoTicket) {
             const listaArchivos = archivos.split(',').map(a => a.trim()).filter(a => a !== '');
 
+            // Según si ya se migró o no, apuntamos a la carpeta correcta
+            const carpetaBase = archivoMigrado ? 'historico' : 'uploads';
+
             listaArchivos.forEach(nombreArchivo => {
                 let prefijoEncontrado = null;
                 for (const prefijo of Object.keys(grupos)) {
                     if (nombreArchivo.startsWith(prefijo)) { prefijoEncontrado = prefijo; break; }
                 }
-                if (!prefijoEncontrado) prefijoEncontrado = 'EV_'; // fallback por si acaso
+                if (!prefijoEncontrado) prefijoEncontrado = 'EV_';
 
                 grupos[prefijoEncontrado].archivos.push(nombreArchivo);
             });
@@ -446,7 +450,7 @@
                     const esDoc = arch.toLowerCase().endsWith('.doc') || arch.toLowerCase().endsWith('.docx');
                     const icono = esPdf ? '📄' : (esDoc ? '📝' : '🖼️');
                     const a = document.createElement('a');
-                    a.href = '/Omnical/public/uploads/' + codigoTicket + '/' + arch;
+                    a.href = '/Omnical/public/' + carpetaBase + '/' + codigoTicket + '/' + arch;
                     a.target = '_blank';
                     a.className = 'archivo-link';
                     a.innerText = icono + ' Archivo ' + (idx + 1);

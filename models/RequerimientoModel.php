@@ -136,7 +136,6 @@ class RequerimientoModel {
             r.archivo_evidencia,
             r.tipo_documento,
             r.numero_documento,
-            r.archivo_evidencia,
             r.estado_validacion,
             (
                 SELECT sv2.estado_solicitud
@@ -275,6 +274,15 @@ class RequerimientoModel {
 
         oci_commit($conexion);
         $exito = true;
+
+        // Si el caso quedó en un estado final, migramos sus archivos al histórico
+        if (in_array($estadoFinal, ['RESUELTO', 'INCONSISTENTE'])) {
+            $this->migrarArchivosAlHistorico($idTicket);
+        }
+        // Si el caso quedó en un estado final, migramos sus archivos al histórico
+        if (in_array($estadoFinal, ['RESUELTO', 'INCONSISTENTE'])) {
+            $this->migrarArchivosAlHistorico($idTicket);
+        }
     } catch (\Exception $e) {
         oci_rollback($conexion);
         $exito = false;
@@ -1106,8 +1114,6 @@ public function listarHistorialPorAnalista($idAnalista, $anio, $mes, $busqueda =
         $condicionBusqueda = " AND (r.numero_documento LIKE :p_busqueda OR r.codigo_ticket LIKE :p_busqueda2) ";
     }
     
-    // Sin búsqueda: mostramos casos cerrados por Carlos, Y también los que le
-    // derivaron y todavía tiene abiertos (para que "Recibido de" aparezca siempre)
     $condicionEstado = $hayBusqueda 
         ? "" 
         : " AND (
@@ -1155,6 +1161,7 @@ public function listarHistorialPorAnalista($idAnalista, $anio, $mes, $busqueda =
             r.descripcion_requerimiento,
             r.observaciones_cierre,
             r.archivo_evidencia,
+            r.archivo_migrado,
             ci.descripcion_motivo,
             TO_CHAR(r.fecha_recepcion, 'DD/MM/YYYY HH24:MI') AS fecha_creacion,
             TO_CHAR(sa.fecha_fin_segmento, 'DD/MM/YYYY HH24:MI') AS fecha_cierre,
@@ -1204,7 +1211,7 @@ public function listarHistorialPorAnalista($idAnalista, $anio, $mes, $busqueda =
     oci_free_statement($stmt);
     $this->db->desconectar();
     return $resultados;
-}
+    }
 
 public function solicitarValidacion($idRequerimiento, $idAnalistaSolicita, $estadoPropuesto, $idInconsistencia, $observaciones, $archivosAdjuntos = []) {
     $conexion = $this->db->conectar();
@@ -1322,8 +1329,8 @@ public function aprobarValidacion($idSolicitud) {
 
         // Marcamos la solicitud como aprobada
         $sqlUpdSol = "UPDATE solicitudes_validacion 
-                      SET estado_solicitud = 'APROBADO', fecha_respuesta = CURRENT_TIMESTAMP
-                      WHERE id_solicitud = :p_sol2";
+              SET estado_solicitud = 'APROBADO', fecha_respuesta = CURRENT_TIMESTAMP
+              WHERE id_solicitud = :p_sol2";
         $stmtUpdSol = oci_parse($conexion, $sqlUpdSol);
         oci_bind_by_name($stmtUpdSol, ':p_sol2', $idSolicitud);
         $r3 = oci_execute($stmtUpdSol, OCI_NO_AUTO_COMMIT);
@@ -1331,7 +1338,12 @@ public function aprobarValidacion($idSolicitud) {
         oci_free_statement($stmtUpdSol);
 
         oci_commit($conexion);
-        $exito = true;
+        $exito = ['exito' => true, 'id_requerimiento' => $idReq, 'estado_final' => $estadoFinal];
+
+        // El caso quedó en estado final tras la aprobación, migramos sus archivos
+        if (in_array($estadoFinal, ['RESUELTO', 'INCONSISTENTE'])) {
+            $this->migrarArchivosAlHistorico($idReq);
+        }
     } catch (\Exception $e) {
         oci_rollback($conexion);
         $exito = false;
@@ -1970,6 +1982,70 @@ public function marcarNotificacionesLeidas($idUsuario) {
     oci_free_statement($stmt);
     $this->db->desconectar();
     return $exito;
+}
+public function migrarArchivosAlHistorico($idRequerimiento) {
+    $conexion = $this->db->conectar();
+    try {
+        // 1. Obtenemos el código del ticket (nombre de la carpeta)
+        $sql = "SELECT codigo_ticket, archivo_migrado FROM requerimientos WHERE id_requerimiento = :p_id";
+        $stmt = oci_parse($conexion, $sql);
+        oci_bind_by_name($stmt, ':p_id', $idRequerimiento);
+        oci_execute($stmt);
+        $fila = oci_fetch_assoc($stmt);
+        oci_free_statement($stmt);
+
+        if (!$fila) {
+            $this->db->desconectar();
+            return false;
+        }
+
+        $codigoTicket = $fila['CODIGO_TICKET'];
+        $yaMigrado = (int)$fila['ARCHIVO_MIGRADO'];
+
+        // Si ya se migró antes (por ejemplo, un caso RESUELTO que se reabrió con
+        // Observación y se vuelve a resolver), no lo intentamos de nuevo.
+        if ($yaMigrado === 1) {
+            $this->db->desconectar();
+            return true;
+        }
+
+        $carpetaOrigen  = __DIR__ . '/../public/uploads/' . $codigoTicket;
+        $carpetaDestino = __DIR__ . '/../public/historico/' . $codigoTicket;
+
+        // Si no existe la carpeta de origen (el caso nunca tuvo archivos), no hay nada que mover
+        if (!is_dir($carpetaOrigen)) {
+            // Aun así marcamos como "migrado" para no reintentar en vano cada vez
+            $sqlUpd = "UPDATE requerimientos SET archivo_migrado = 1 WHERE id_requerimiento = :p_id2";
+            $stmtUpd = oci_parse($conexion, $sqlUpd);
+            oci_bind_by_name($stmtUpd, ':p_id2', $idRequerimiento);
+            oci_execute($stmtUpd, OCI_COMMIT_ON_SUCCESS);
+            oci_free_statement($stmtUpd);
+            $this->db->desconectar();
+            return true;
+        }
+
+        // 2. Movemos la carpeta completa de una sola vez
+        $movido = rename($carpetaOrigen, $carpetaDestino);
+
+        if (!$movido) {
+            $this->db->desconectar();
+            return false;
+        }
+
+        // 3. Marcamos el ticket como migrado
+        $sqlUpd = "UPDATE requerimientos SET archivo_migrado = 1 WHERE id_requerimiento = :p_id3";
+        $stmtUpd = oci_parse($conexion, $sqlUpd);
+        oci_bind_by_name($stmtUpd, ':p_id3', $idRequerimiento);
+        oci_execute($stmtUpd, OCI_COMMIT_ON_SUCCESS);
+        oci_free_statement($stmtUpd);
+
+        $this->db->desconectar();
+        return true;
+
+    } catch (\Exception $e) {
+        $this->db->desconectar();
+        return false;
+    }
 }
 
 } // ← cierra la clase RequerimientoModel
